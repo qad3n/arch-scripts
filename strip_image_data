@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+find . -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) -print0 \
+	| parallel -0 mogrify -verbose -strip {}
