@@ -1,4 +1,62 @@
 #!/usr/bin/env bash
+grn=$'\033[0;32m'
+red=$'\033[0;31m'
+dim=$'\033[2m'
+rst=$'\033[0m'
 
-find . -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) -print0 \
-	| parallel -0 mogrify -verbose -strip {}
+# dependency check to remind me when using new machines
+declare -A deps=([mogrify]=imagemagick [jpegtran]=libjpeg-turbo [parallel]=parallel)
+missing=()
+for bin in "${!deps[@]}"; do
+    command -v "$bin" &>/dev/null || missing+=("${deps[$bin]}")
+done
+if (( ${#missing[@]} )); then
+    printf '%bMissing dependencies:%b %s\n' "$red" "$rst" "${missing[*]}"
+    exit 1
+fi
+
+bytesDir=$(mktemp -d); trap 'rm -rf "$bytesDir"' EXIT
+
+fmt()
+{
+    local b=$1
+    awk -v b="$b" 'BEGIN {
+        if      (b >= 1048576) printf "%.1f MiB", b/1048576
+        else if (b >= 1024)    printf "%.1f KiB", b/1024
+        else                   printf "%d B",      b
+    }'
+}
+
+stripOne()
+{
+    local f="$1" ext="${1##*.}" before after saved
+    
+    before=$(stat -c%s "$f")
+    case "${ext,,}" in
+        jpg|jpeg)
+            local tmp; tmp=$(mktemp --suffix=".${ext,,}")
+            jpegtran -copy none -optimize "$f" > "$tmp" 2>/dev/null && mv "$tmp" "$f" || { rm -f "$tmp"; false; }
+            ;;
+        *) mogrify -strip "$f" 2>/dev/null ;;
+    esac || { printf '%b✗%b %s\n' "$red" "$rst" "$f"; return; }
+    after=$(stat -c%s "$f")
+    saved=$(( before - after ))
+
+    echo "$saved" > "$(mktemp "$bytesDir/XXXXXX")"
+
+    printf '%b✓%b %-45s %s → %s  %b(-%s)%b\n' \
+        "$grn" "$rst" "$f" "$(fmt "$before")" "$(fmt "$after")" "$dim" "$(fmt "$saved")" "$rst"
+}
+
+export -f stripOne fmt
+export grn red dim rst bytesDir
+
+find . -type f \( \
+    -iname '*.png'  -o -iname '*.jpg'  -o -iname '*.jpeg' \
+    -o -iname '*.webp' -o -iname '*.gif' -o -iname '*.tiff' \
+    -o -iname '*.tif'  -o -iname '*.bmp' -o -iname '*.heic' \
+    -o -iname '*.heif' -o -iname '*.avif' \
+\) -print0 | parallel --null --line-buffer stripOne
+
+total=$(awk '{s+=$1} END {print s+0}' "$bytesDir"/* 2>/dev/null)
+printf '\n%bTotal stripped:%b %s\n' "$grn" "$rst" "$(fmt "${total:-0}")"
